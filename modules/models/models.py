@@ -131,6 +131,9 @@ def get_model(
         elif model_type == ModelType.Qwen:
             from .Qwen import Qwen_Client
             model = Qwen_Client(model_name, user_name=user_name)
+        elif model_type == ModelType.Qwen3:
+            from .Qwen3 import Qwen3_Client
+            model = Qwen3_Client(model_name, user_name=user_name)
         elif model_type == ModelType.ERNIE:
             from .ERNIE import ERNIE_Client
             model = ERNIE_Client(model_name, api_key=os.getenv("ERNIE_APIKEY"),secret_key=os.getenv("ERNIE_SECRETKEY"))

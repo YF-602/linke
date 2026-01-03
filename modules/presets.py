@@ -83,6 +83,7 @@ ONLINE_MODELS = [
     "Gemma 2B",
     "Gemma 7B",
     "xmchat",
+    "RouteLLM",
     "Azure OpenAI",
     "yuanai-1.0-base_10B",
     "yuanai-1.0-translate",
@@ -558,6 +559,15 @@ MODEL_METADATA = {
         "token_limit": 64000,
         "multimodal": False,
         "model_type": "DeepSeek"
+    }
+    ,
+    "RouteLLM": {
+        "model_name": "RouteLLM",
+        "description": "基于 routellm/bert 的请求路由器：根据 prompt 判定并转发到合适模型",
+        "token_limit": 4096,
+        "placeholder": {
+            "slogan": i18n("RouteLLM 路由器")
+        }
     }
 }
 

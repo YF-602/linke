@@ -34,6 +34,16 @@ def get_model(
     # del current_model.model
     model = original_model
     try:
+        # Special-case: RouteLLM router model (classification -> forward to target model)
+        if model_name.lower().startswith("routellm") or model_name.lower().startswith("router"):
+            logging.info(f"正在加载 RouteLLM 路由器模型: {model_name}")
+            from .route_llm import RouteLLM_Client
+
+            model = RouteLLM_Client(model_name, user_name=user_name)
+            logging.info(f"RouteLLM 初始化完成: {model_name}")
+            modelDescription = i18n(model.description)
+            presudo_key = hide_middle_chars(access_key)
+            return model, msg, gr.update(label=model_name, placeholder=setPlaceholder(model=model)), gr.update(), access_key, presudo_key, modelDescription, model.stream
         if model_type == ModelType.OpenAIVision or model_type == ModelType.OpenAI:
             logging.info(f"正在加载 OpenAI 模型: {model_name}")
             from .OpenAIVision import OpenAIVisionClient

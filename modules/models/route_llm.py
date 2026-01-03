@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from typing import Dict, List
+from urllib.parse import urlparse
 
 import requests
 
@@ -179,8 +180,20 @@ class RouteLLM_Client(BaseLLMModel):
                 if hf_token:
                     headers["Authorization"] = f"Bearer {hf_token}"
                 # Try OpenAI-compatible chat completions payload first
+
+                # get base URL to query available models
+                parsed = urlparse(url)
+                vllm_url = f"{parsed.scheme}://{parsed.netloc}"
+
+                resp = requests.get(f"{vllm_url}/v1/models", headers=headers, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()  # 返回字典
+                models = [m["id"] for m in data.get("data", [])]  # 提取所有模型 id
+                vllm_model_name = models[0] if models else None  # 取第一个模型
+
                 payload = {
-                    "model": os.environ.get("ROUTELLM_HTTP_MODEL_NAME", "routellm-proxy"),
+                    # "model": os.environ.get("ROUTELLM_HTTP_MODEL_NAME", "routellm-proxy"),
+                    "model": vllm_model_name,
                     "messages": [{"role": "user", "content": prompt_text}],
                     "max_tokens": 1024,
                 }
@@ -237,12 +250,20 @@ class RouteLLM_Client(BaseLLMModel):
             logging.exception("RouteLLM: 获取目标模型失败，尝试回退模型")
             # If fallback differs, try fallback
             if target_model_name != self.fallback_model:
+                if _is_url(self.fallback_model):
+                    try:
+                        reply = _call_http_target(self.fallback_model, prompt)
+                        chatbot.append((prompt, reply))
+                        yield chatbot, i18n("已从 HTTP 目标获得回退模型回答")
+                        return
+                    except Exception:
+                        logging.warning("RouteLLM: 调用映射的 HTTP 目标失败，尝试使用本地回退模型")
                 try:
                     target_model, msg, placeholder_update, dropdown_update, access_key, presudo_key, modelDescription, stream = get_model(
                         model_name=self.fallback_model, access_key=self.api_key, user_name=self.user_name, original_model=None
                     )
                 except Exception:
-                    logging.exception("RouteLLM: 回退模型也无法加载")
+                    logging.exception("RouteLLM: 本地回退模型也无法加载")
                     yield chatbot + [(prompt, "")], i18n("获取目标模型失败，请查看日志")
                     return
             else:

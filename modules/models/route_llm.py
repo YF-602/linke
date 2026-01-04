@@ -11,6 +11,7 @@ import requests
 from .base_model import BaseLLMModel
 
 from ..presets import i18n
+from ..presets import ROUTELLM_BERT_URL, ROUTELLM_FALLBACK_MODEL, ROUTELLM_MAPPING, ROUTELLM_THRESHOLD
 
 
 class RouteLLM_Client(BaseLLMModel):
@@ -27,19 +28,26 @@ class RouteLLM_Client(BaseLLMModel):
     def __init__(self, model_name: str, user_name: str = "") -> None:
         super().__init__(model_name=model_name, user=user_name)
         # HTTP endpoint for classifier service (optional)
-        self.bert_url = os.environ.get("ROUTELLM_BERT_URL", "")
+        self.bert_url = ROUTELLM_BERT_URL
         # threshold for deciding to use top prediction
-        self.threshold = float(os.environ.get("ROUTELLM_THRESHOLD", 0.6))
+        self.threshold = float(ROUTELLM_THRESHOLD)
+        logging.info(f"RouteLLM: 使用阈值 {self.threshold:.4f} 进行路由判断")
         # mapping from classifier label to target model name
-        mapping_env = os.environ.get("ROUTELLM_MAPPING", "{}")
-        try:
-            self.mapping: Dict[str, str] = json.loads(mapping_env) if mapping_env else {}
-        except Exception:
-            logging.exception("无法解析 ROUTELLM_MAPPING，使用空映射")
+        mapping_env = ROUTELLM_MAPPING
+        logging.info(f"RouteLLM: 使用映射 {mapping_env} 进行路由判断")
+        if isinstance(mapping_env, dict):
+            self.mapping = mapping_env
+        elif isinstance(mapping_env, str) and mapping_env:
+            try:
+                self.mapping = json.loads(mapping_env)
+            except Exception:
+                logging.exception("无法解析 ROUTELLM_MAPPING，使用空映射")
+                self.mapping = {}
+        else:
             self.mapping = {}
 
         # default fallback model if no label passes threshold
-        self.fallback_model = os.environ.get("ROUTELLM_FALLBACK_MODEL", "GPT3.5 Turbo")
+        self.fallback_model = ROUTELLM_FALLBACK_MODEL
 
         # local classifier fallback
         self._local_classifier = None
@@ -131,6 +139,9 @@ class RouteLLM_Client(BaseLLMModel):
             prompt = inputs[0].get("text", "")
         else:
             prompt = inputs
+        
+        # 是否使用了回退模型
+        self.ht = False
 
         # Inform UI we are routing
         status_text = i18n("正在进行模型路由判断……")
@@ -141,6 +152,7 @@ class RouteLLM_Client(BaseLLMModel):
         if not scores:
             status_text = i18n("路由器无法得到分类结果，使用回退模型")
             target_model_name = self.fallback_model
+            self.ht = True
         else:
             # 打印所有分类结果
             for s in scores:
@@ -158,9 +170,12 @@ class RouteLLM_Client(BaseLLMModel):
             if score >= self.threshold and mapped:
                 target_model_name = mapped
                 status_text = i18n("路由结果：{label} (概率 {score:.2f})，将转发到 {model}").format(label=label, score=score, model=target_model_name)
+                logging.info(f"RouteLLM: 路由到模型 {target_model_name}")
             else:
                 target_model_name = self.fallback_model
+                self.ht = True
                 status_text = i18n("没有达到阈值，使用回退模型 {model}").format(model=target_model_name)
+                logging.info(f"RouteLLM: 没有达到阈值，使用回退模型 {target_model_name}")
 
         yield chatbot + [(prompt, "")], status_text
 
@@ -179,25 +194,33 @@ class RouteLLM_Client(BaseLLMModel):
                 hf_token = os.environ.get("HF_AUTH_TOKEN")
                 if hf_token:
                     headers["Authorization"] = f"Bearer {hf_token}"
-                # Try OpenAI-compatible chat completions payload first
+                # 支持传入带管道符的形式: "http://host:port/v1/chat/completions|model-name"
+                # 优先使用管道符指定的模型名；否则尝试查询 /v1/models 并取第一个
+                endpoint = url
+                specified_model = None
+                if isinstance(url, str) and "|" in url:
+                    parts = url.split("|", 1)
+                    endpoint = parts[0].strip()
+                    specified_model = parts[1].strip() or None
 
-                # get base URL to query available models
-                parsed = urlparse(url)
+                # get base URL to query available models if no model specified
+                parsed = urlparse(endpoint)
                 vllm_url = f"{parsed.scheme}://{parsed.netloc}"
 
-                resp = requests.get(f"{vllm_url}/v1/models", headers=headers, timeout=10)
-                resp.raise_for_status()
-                data = resp.json()  # 返回字典
-                models = [m["id"] for m in data.get("data", [])]  # 提取所有模型 id
-                vllm_model_name = models[0] if models else None  # 取第一个模型
+                vllm_model_name = specified_model
+                if vllm_model_name is None:
+                    resp = requests.get(f"{vllm_url}/v1/models", headers=headers, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()  # 返回字典
+                    models = [m.get("id") for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+                    vllm_model_name = models[0] if models else None
 
                 payload = {
-                    # "model": os.environ.get("ROUTELLM_HTTP_MODEL_NAME", "routellm-proxy"),
                     "model": vllm_model_name,
                     "messages": [{"role": "user", "content": prompt_text}],
                     "max_tokens": 1024,
                 }
-                r = requests.post(url, json=payload, headers=headers, timeout=30)
+                r = requests.post(endpoint, json=payload, headers=headers, timeout=30)
                 r.raise_for_status()
                 data = r.json()
                 # OpenAI-style response
@@ -223,41 +246,48 @@ class RouteLLM_Client(BaseLLMModel):
                 raise
 
         # If target is a URL, call it directly
-        if _is_url(target_model_name):
+        if not self.ht:
+            if _is_url(target_model_name):
+                try:
+                    reply = _call_http_target(target_model_name, prompt)
+                    chatbot.append((prompt, reply))
+                    yield chatbot, i18n("已从 HTTP 目标获得回答")
+                    return
+                except Exception:
+                    self.ht = True
+                    logging.warning("RouteLLM: 调用映射的 HTTP 目标失败，尝试使用回退模型")
+                    # fall through to use get_model with fallback
+
+        if not self.ht:
+            # lazily import factory to avoid circular import on module load
             try:
-                reply = _call_http_target(target_model_name, prompt)
-                chatbot.append((prompt, reply))
-                yield chatbot, i18n("已从 HTTP 目标获得回答")
-                return
+                from modules.models.models import get_model
             except Exception:
-                logging.warning("RouteLLM: 调用映射的 HTTP 目标失败，尝试使用回退模型")
-                # fall through to use get_model with fallback
+                logging.exception("RouteLLM: 无法导入 get_model")
+                yield chatbot + [(prompt, "")], i18n("内部错误：无法加载目标模型")
+                return
 
-        # lazily import factory to avoid circular import on module load
-        try:
-            from modules.models.models import get_model
-        except Exception:
-            logging.exception("RouteLLM: 无法导入 get_model")
-            yield chatbot + [(prompt, "")], i18n("内部错误：无法加载目标模型")
-            return
+            # Try to get target model via factory; if it fails due to network, try fallback
+            try:
+                target_model, msg, placeholder_update, dropdown_update, access_key, presudo_key, modelDescription, stream = get_model(
+                    model_name=target_model_name, access_key=self.api_key, user_name=self.user_name, original_model=None
+                )
+            except Exception:
+                self.ht = True
+                logging.exception("RouteLLM: 获取目标模型失败，尝试回退模型")
 
-        # Try to get target model via factory; if it fails due to network, try fallback
-        try:
-            target_model, msg, placeholder_update, dropdown_update, access_key, presudo_key, modelDescription, stream = get_model(
-                model_name=target_model_name, access_key=self.api_key, user_name=self.user_name, original_model=None
-            )
-        except Exception:
-            logging.exception("RouteLLM: 获取目标模型失败，尝试回退模型")
-            # If fallback differs, try fallback
-            if target_model_name != self.fallback_model:
-                if _is_url(self.fallback_model):
-                    try:
-                        reply = _call_http_target(self.fallback_model, prompt)
-                        chatbot.append((prompt, reply))
-                        yield chatbot, i18n("已从 HTTP 目标获得回退模型回答")
-                        return
-                    except Exception:
-                        logging.warning("RouteLLM: 调用映射的 HTTP 目标失败，尝试使用本地回退模型")
+        if self.ht:
+            if _is_url(self.fallback_model):
+                try:
+                    reply = _call_http_target(self.fallback_model, prompt)
+                    chatbot.append((prompt, reply))
+                    yield chatbot, i18n("已从 HTTP 目标获得回退模型回答")
+                    return
+                except Exception:
+                    logging.warning("RouteLLM: 调用回退模型失败")
+                    yield chatbot + [(prompt, "")], i18n("RouteLLM: 调用回退模型失败")
+                    return
+            else:
                 try:
                     target_model, msg, placeholder_update, dropdown_update, access_key, presudo_key, modelDescription, stream = get_model(
                         model_name=self.fallback_model, access_key=self.api_key, user_name=self.user_name, original_model=None
@@ -266,9 +296,6 @@ class RouteLLM_Client(BaseLLMModel):
                     logging.exception("RouteLLM: 本地回退模型也无法加载")
                     yield chatbot + [(prompt, "")], i18n("获取目标模型失败，请查看日志")
                     return
-            else:
-                yield chatbot + [(prompt, "")], i18n("获取目标模型失败，请查看日志")
-                return
 
         # Delegate the actual prediction to the chosen model and forward its yields
         try:

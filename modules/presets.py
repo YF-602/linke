@@ -26,6 +26,16 @@ HISTORY_DIR = Path("history")
 HISTORY_DIR = "history"
 TEMPLATES_DIR = "templates"
 
+# Router 设置
+ROUTELLM_BERT_URL="http://127.0.0.1:8800/predict" # 路由器的BERT模型API地址(FastAPI提供)
+ROUTELLM_THRESHOLD=0.3  # 路由器的阈值，低于这个值的请求将被拒绝
+ROUTELLM_MAPPING={
+    "LABEL_0":"http://127.0.0.1:9000/v1/chat/completions|qwen3-4b-instruct", # vllm支持选择模型名称的格式为 API地址|模型名称
+    "LABEL_1":"http://127.0.0.1:9000/v1/chat/completions", # 可以是在线模型的API地址，也可以是本地模型的API地址，没有指定模型名称则使用第一个模型
+    "LABEL_2":"Qwen3-4B-Instruct" # 可以是下拉栏显示的模型名称
+}
+ROUTELLM_FALLBACK_MODEL="Qwen3-4B-Instruct"  # 路由器无法识别的请求将使用的模型，和ROUTELLM_MAPPING中的值格式相同
+
 # 错误信息
 STANDARD_ERROR_MSG = i18n("☹️发生了错误：")  # 错误信息的标准前缀
 GENERAL_ERROR_MSG = i18n("获取对话时发生错误，请查看后台日志")

@@ -245,10 +245,135 @@ class RouteLLM_Client(BaseLLMModel):
                 logging.exception("RouteLLM: 调用 HTTP 目标失败")
                 raise
 
+        def _call_http_target_stream(url: str, prompt_text: str):
+            """Stream response from an OpenAI/vllm-compatible endpoint.
+            Yields incremental text chunks as they arrive.
+            Supports pipe-separated `url|model` format like `_call_http_target`.
+            """
+            try:
+                headers = {"Content-Type": "application/json"}
+                hf_token = os.environ.get("HF_AUTH_TOKEN")
+                if hf_token:
+                    headers["Authorization"] = f"Bearer {hf_token}"
+
+                endpoint = url
+                specified_model = None
+                if isinstance(url, str) and "|" in url:
+                    parts = url.split("|", 1)
+                    endpoint = parts[0].strip()
+                    specified_model = parts[1].strip() or None
+
+                parsed = urlparse(endpoint)
+                vllm_url = f"{parsed.scheme}://{parsed.netloc}"
+
+                vllm_model_name = specified_model
+                if vllm_model_name is None:
+                    resp = requests.get(f"{vllm_url}/v1/models", headers=headers, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    models = [m.get("id") for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+                    vllm_model_name = models[0] if models else None
+
+                payload = {
+                    "model": vllm_model_name,
+                    "messages": [{"role": "user", "content": prompt_text}],
+                    "max_tokens": 1024,
+                    "stream": True,
+                }
+
+                r = requests.post(endpoint, json=payload, headers=headers, timeout=60, stream=True)
+                r.raise_for_status()
+
+                for raw_line in r.iter_lines(decode_unicode=True):
+                    if not raw_line:
+                        continue
+                    line = raw_line.strip()
+                    # OpenAI-style SSE often prefixes with 'data: '
+                    if line.startswith("data:"):
+                        line = line[len("data:"):].strip()
+                    if line == "[DONE]":
+                        break
+                    # Try to parse JSON chunk
+                    # 有些服务会把 JSON chunk 紧接着纯文本（无换行）一起发送，
+                    # 如: {json}plain text{json} 。这里尝试反复从行开头解析 JSON 前缀，
+                    # 对每个解析出的 JSON 提取增量文本并 yield，剩余部分作为纯文本 yield。
+                    remaining = line
+                    parsed_any = False
+                    while remaining:
+                        remaining = remaining.lstrip()
+                        if not remaining:
+                            break
+                        if not remaining.startswith("{"):
+                            # 剩余不是以 JSON 开头，直接作为文本返回并结束
+                            yield remaining
+                            break
+                        # 尝试找到从开头到某个位置为有效 JSON 的最短前缀
+                        found = False
+                        for i in range(1, len(remaining) + 1):
+                            prefix = remaining[:i]
+                            try:
+                                j = json.loads(prefix)
+                                parsed_any = True
+                                found = True
+                                # 移除已解析的前缀，继续处理剩余部分
+                                remaining = remaining[i:]
+                                # 从解析出的 JSON 中提取文本
+                                chunk = ""
+                                if isinstance(j, dict):
+                                    if "choices" in j and isinstance(j["choices"], list) and len(j["choices"]) > 0:
+                                        ch = j["choices"][0]
+                                        if isinstance(ch, dict):
+                                            if "delta" in ch and isinstance(ch["delta"], dict):
+                                                chunk = ch["delta"].get("content") or ch["delta"].get("text") or ""
+                                            elif "text" in ch:
+                                                chunk = ch.get("text", "")
+                                            elif "message" in ch and isinstance(ch["message"], dict):
+                                                chunk = ch["message"].get("content", "")
+                                    elif "text" in j:
+                                        chunk = j.get("text", "")
+                                    elif "message" in j and isinstance(j["message"], dict):
+                                        chunk = j["message"].get("content", "")
+                                if chunk:
+                                    yield chunk
+                                # 继续循环以处理 remaining
+                                break
+                            except Exception:
+                                # 继续扩展前缀长度再试
+                                continue
+                        if not found:
+                            # 未能在开头解析出 JSON，作为回退直接 yield 原始行并退出
+                            if not parsed_any:
+                                yield line
+                            else:
+                                # 已解析过一些 JSON，但剩余无法解析为 JSON，则把剩余作为文本返回
+                                if remaining:
+                                    yield remaining
+                            break
+                return
+            except Exception:
+                logging.exception("RouteLLM: 流式调用 HTTP 目标失败")
+                raise
+
         # If target is a URL, call it directly
         if not self.ht:
             if _is_url(target_model_name):
                 try:
+                    # First try streaming
+                    try:
+                        stream_gen = _call_http_target_stream(target_model_name, prompt)
+                        # add placeholder entry so UI shows user prompt immediately
+                        chatbot.append((prompt, ""))
+                        reply_accum = ""
+                        for chunk in stream_gen:
+                            reply_accum += chunk
+                            chatbot[-1] = (prompt, reply_accum)
+                            yield chatbot, i18n("正在从 HTTP 目标流式接收回答...")
+                        yield chatbot, i18n("已从 HTTP 目标获得回答")
+                        logging.info(f"RouteLLM: 成功从 HTTP 目标 {target_model_name} 获得流式回答")
+                        return
+                    except Exception:
+                        logging.warning("RouteLLM: 流式调用失败，回退到一次性调用")
+                        # fall through to single-call
                     reply = _call_http_target(target_model_name, prompt)
                     chatbot.append((prompt, reply))
                     yield chatbot, i18n("已从 HTTP 目标获得回答")
@@ -279,6 +404,21 @@ class RouteLLM_Client(BaseLLMModel):
         if self.ht:
             if _is_url(self.fallback_model):
                 try:
+                    # First try streaming
+                    try:
+                        stream_gen = _call_http_target_stream(target_model_name, prompt)
+                        # add placeholder entry so UI shows user prompt immediately
+                        chatbot.append((prompt, ""))
+                        reply_accum = ""
+                        for chunk in stream_gen:
+                            reply_accum += chunk
+                            chatbot[-1] = (prompt, reply_accum)
+                            yield chatbot, i18n("正在从 HTTP 目标流式接收回答...")
+                        yield chatbot, i18n("已从 HTTP 目标获得回答")
+                        logging.info(f"RouteLLM: 成功从 HTTP 目标 {target_model_name} 获得流式回答")
+                        return
+                    except Exception:
+                        logging.warning("RouteLLM: 流式调用失败，回退到一次性调用")
                     reply = _call_http_target(self.fallback_model, prompt)
                     chatbot.append((prompt, reply))
                     yield chatbot, i18n("已从 HTTP 目标获得回退模型回答")

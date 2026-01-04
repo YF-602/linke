@@ -117,7 +117,8 @@ ONLINE_MODELS = [
     "ERNIE-Bot-turbo",
     "ERNIE-Bot",
     "ERNIE-Bot-4",
-    "Ollama"
+    "Ollama",
+    "GLM4",
 ]
 
 # 添加渐进式推理虚拟模型（可在下拉栏选择）
@@ -483,6 +484,14 @@ MODEL_METADATA = {
         "model_name": "gemma-7b-it",
         "description": "groq_gemma_7b_description",
         "token_limit": 8192,
+    },
+    "GLM4": {
+        "model_name": "glm-4.7",
+        "description": "GLM4: ZhipuAI's latest large language model",
+        "token_limit": 65536,
+        "placeholder": {
+            "slogan": i18n("GLM4")
+        }
     },
     "GooglePaLM": {"model_name": "models/chat-bison-001"},
     "xmchat": {"model_name": "xmchat"},

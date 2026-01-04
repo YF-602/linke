@@ -80,6 +80,12 @@ def get_model(
             logging.info(f"正在加载Groq模型: {model_name}")
             from .Groq import Groq_Client
             model = Groq_Client(model_name, access_key, user_name=user_name)
+        elif model_type == ModelType.GLM4:
+            logging.info(f"正在加载GLM4模型: {model_name}")
+            from .GLM4 import GLM4_Client
+            access_key = os.environ.get("GLM4_API_KEY", access_key)
+            logging.info(access_key)
+            model = GLM4_Client(model_name, access_key, user_name=user_name)
         elif model_type == ModelType.LLaMA and lora_model_path == "":
             msg = f"现在请为 {model_name} 选择LoRA模型"
             logging.info(msg)

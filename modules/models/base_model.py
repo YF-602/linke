@@ -162,6 +162,7 @@ class ModelType(Enum):
     Groq = 22
     DeepSeek = 23
     Qwen3 = 24
+    GLM4 = 25
 
     @classmethod
     def get_type(cls, model_name: str):
@@ -190,6 +191,8 @@ class ModelType(Enum):
             model_type = ModelType.ChatGLM
         elif "groq" in model_name_lower:
             model_type = ModelType.Groq
+        elif "glm4" in model_name_lower:
+            model_type = ModelType.GLM4
         elif "ollama" in model_name_lower:
             model_type = ModelType.Ollama
         elif "llama" in model_name_lower or "alpaca" in model_name_lower:

@@ -120,6 +120,9 @@ ONLINE_MODELS = [
     "Ollama"
 ]
 
+# 添加渐进式推理虚拟模型（可在下拉栏选择）
+ONLINE_MODELS.append("ProgreLLM")
+
 LOCAL_MODELS = [
     "chatglm-6b",
     "chatglm-6b-int4",
@@ -265,6 +268,29 @@ MODEL_METADATA = {
         "placeholder": {
             "logo": "file=web_assets/model_logos/openai-black.webp",
             "slogan": i18n("gpt_default_slogan"),
+        }
+    },
+    "ProgreLLM": {
+        "model_name": "ProgreLLM",
+        "description": "ProgreLLM: two-stage progressive reasoning (large -> small)",
+        "token_limit": 65536,
+        "placeholder": {
+            "logo": "file=web_assets/model_logos/openai-black.webp",
+            "slogan": i18n("渐进式推理")
+        },
+        "model_type": "OpenAI",
+        "multimodal": False,
+        "api_host": None,
+        "api_key": None,
+        "stream": False,
+        "metadata": {
+            "progressive": {
+                # 支持的格式与Router设置里的ROUTELLM_MAPPING相同
+                "large_endpoint": "http://127.0.0.1:9000/v1/chat/completions|qwen3-4b-instruct",
+                "small_endpoint": "http://127.0.0.1:9000/v1/chat/completions",
+                "large_api_key": "",
+                "small_api_key": ""
+            }
         }
     },
     "GPT-4o-mini": {

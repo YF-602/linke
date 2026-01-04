@@ -1,0 +1,6 @@
+下面介绍如何使用渐进式推理：
+
+若要使用vllm的接口服务（推荐这样做，因为本地模型容易爆显存），则先启动vllm服务，详见useRouter.md
+
+之后启动程序，在下拉栏选择模型ProgreLLM即可
+ProgreLLM配置在presets.py的MODEL_METADATA中
